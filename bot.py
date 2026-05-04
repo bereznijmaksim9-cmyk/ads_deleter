@@ -1,59 +1,58 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+import os
+from aiogram import Bot, Dispatcher, types
+from aiohttp import web
 
-# Токен лучше хранить в переменных окружения, но для теста оставляем здесь
-# ВАЖНО: Если ты публиковал этот токен в открытом доступе, лучше перевыпусти его у BotFather
-TOKEN = "8785433173:AAF2hw39tpyEVwX11zyi1gEIeXtunE8WSIA"
+# Токен берем из настроек Render (Environment Variables)
+TOKEN = os.getenv("TOKEN")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 logging.basicConfig(level=logging.INFO)
 
+# --- ЭТОТ БЛОК НУЖЕН ДЛЯ RENDER ---
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def start_webserver():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render сам подставит нужный порт в переменную PORT
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+# ----------------------------------
+
 @dp.message()
 async def check_links_and_buttons(message: types.Message):
-    # 1. Пропускаем проверку, если это личные сообщения с ботом
-    if message.chat.type == "private":
+    if message.chat.type == "private" or message.from_user.is_bot:
         return
 
-    # 2. ПРОВЕРКА НА АДМИНА
-    # Бот спрашивает у Телеграма статус того, кто отправил сообщение
     try:
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        # Если статус пользователя — администратор или владелец (creator), выходим из функции
         if member.status in ["administrator", "creator"]:
             return
-    except Exception as e:
-        logging.error(f"Ошибка проверки статуса: {e}")
-        # Если не удалось проверить статус, на всякий случай не удаляем
+    except Exception:
         return
 
-    # 3. ЛОГИКА ПОИСКА СПАМА (для всех остальных: ботов и обычных юзеров)
-    
-    # Проверяем наличие ссылок
-    has_link = False
-    if message.entities:
-        for entity in message.entities:
-            if entity.type in ["url", "text_link"]:
-                has_link = True
-                break
-
-    # Проверяем наличие кнопок (reply_markup)
+    has_link = any(entity.type in ["url", "text_link"] for entity in (message.entities or []))
     has_buttons = message.reply_markup is not None
 
-    # 4. УДАЛЕНИЕ
     if has_link or has_buttons:
         try:
             await message.delete()
-            logging.info(f"Удалено спам-сообщение от {message.from_user.id}")
         except Exception as e:
-            logging.error(f"Не удалось удалить сообщение: {e}")
+            logging.error(f"Error: {e}")
 
 async def main():
-    print("Бот запущен и защищает чат от спама...")
-    # Удаляем старые сообщения, которые пришли, пока бот был выключен
+    # Запускаем веб-сервер в фоне, чтобы Render не ругался
+    asyncio.create_task(start_webserver())
+    
+    print("Бот запущен...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
